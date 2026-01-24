@@ -266,7 +266,7 @@ class CronometroApp:
         frame_topo.pack(fill="x", padx=10, pady=(10, 5))
 
         caminho_logo = os.path.join(os.getcwd(), 'assets', 'logo_corrida.png')
-        titulo_texto = "Cronometragem Oficial - CORRIDA OAB 2026"
+        titulo_texto = "Cronometragem Oficial - 5º CORRIDA E CAMINHADA DA OAB-CAMBUI - Comemoração Ao Mês Das Mulheres"
         
         imagem_carregada = False
         if os.path.exists(caminho_logo):
@@ -281,7 +281,7 @@ class CronometroApp:
                 imagem_carregada = True
             except: 
                 try:
-                    self.logo_img = tk.PhotoImage(file=caminho_logo).subsample(3, 3)
+                    self.logo_img = tk.PhotoImage(file=caminho_logo).subsample(4, 4)
                     imagem_carregada = True
                 except: pass
 
