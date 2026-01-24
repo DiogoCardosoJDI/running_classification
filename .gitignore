@@ -1,0 +1,29 @@
+# --- BANCO DE DADOS (O que você pediu) ---
+*.db
+*.sqlite3
+*.sqlite
+
+# --- PYTHON ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- AMBIENTE VIRTUAL (Nunca deve subir) ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- VS CODE (Configurações locais do editor) ---
+.vscode/
+
+# --- ARQUIVOS DE SISTEMA OPERACIONAL ---
+.DS_Store
+Thumbs.db
+
+# --- SAÍDAS DO SISTEMA (PDFs gerados) ---
+# Se quiser que os relatórios não subam, descomente as linhas abaixo:
+*.pdf
+# Se quiser manter APENAS a pasta data_charge mas não os arquivos dentro (opcional):
+# data_charge/*
+# !data_charge/planilha_modelo.xlsx
