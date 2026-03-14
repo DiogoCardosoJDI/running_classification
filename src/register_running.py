@@ -83,18 +83,29 @@ class BancoDeDados:
         except Exception as e:
             return False, str(e)
 
-    def _construir_query_filtro(self, filtro_advogado):
+    def _construir_query_filtro(self, filtro_advogado, sexo_tipo=None):
+        """
+        sexo_tipo: 'M' para masculino, 'F' para feminino
+        """
         base_where = "WHERE TEMPO_PROVA IS NOT NULL"
+        
+        # Filtro de Advogado
         if filtro_advogado == 'apenas_advogados':
-            return f"{base_where} AND ADVOGADO = 'SIM'"
+            base_where += " AND ADVOGADO = 'SIM'"
         elif filtro_advogado == 'excluir_advogados':
-            return f"{base_where} AND ADVOGADO != 'SIM'"
-        else:
-            return base_where
+            base_where += " AND ADVOGADO != 'SIM'"
+            
+        # Filtro de Sexo com mapeamento flexível
+        if sexo_tipo == 'M':
+            base_where += " AND LOWER(SEXO) IN ('m', 'masc', 'masculino')"
+        elif sexo_tipo == 'F':
+            base_where += " AND LOWER(SEXO) IN ('f', 'fem', 'feminino')"
+            
+        return base_where
 
-    def obter_classificacao_geral(self, filtro_advogado='todos'):
+    def obter_classificacao_geral(self, filtro_advogado='todos', sexo_tipo=None):
         try:
-            where_clause = self._construir_query_filtro(filtro_advogado)
+            where_clause = self._construir_query_filtro(filtro_advogado, sexo_tipo)
             query = f"""
                 SELECT NUMERO, NOME, EQUIPE, CATEGORIA, ADVOGADO, TEMPO_PROVA 
                 FROM participantes 
@@ -106,10 +117,10 @@ class BancoDeDados:
         except Exception as e:
             print(f"Erro query geral: {e}")
             return []
-
-    def obter_classificacao_por_categoria(self, filtro_advogado='todos'):
+        
+    def obter_classificacao_por_categoria(self, filtro_advogado='todos', sexo_tipo=None):
         try:
-            where_clause = self._construir_query_filtro(filtro_advogado)
+            where_clause = self._construir_query_filtro(filtro_advogado, sexo_tipo)
             query_cat = f"SELECT DISTINCT CATEGORIA FROM participantes {where_clause} ORDER BY CATEGORIA"
             self.cursor.execute(query_cat)
             categorias = [row[0] for row in self.cursor.fetchall()]
@@ -400,28 +411,44 @@ class CronometroApp:
         if not self.prova_iniciada:
             messagebox.showwarning("Aviso", "Prova não iniciada.")
             return
-        if messagebox.askyesno("Confirmar", "Encerrar e gerar relatórios?"):
+            
+        if messagebox.askyesno("Confirmar", "Encerrar e gerar relatórios por SEXO?"):
             self.atualizando_tempo = False
             self.prova_iniciada = False
             msgs = []
             filtro_padrao = 'todos' if self.var_incluir_advogados_geral.get() else 'excluir_advogados'
             
-            dados_geral = self.db.obter_classificacao_geral(filtro_advogado=filtro_padrao)
-            res1 = self.pdf_gen.gerar_pdf_geral(dados_geral, "CLASSIFICAÇÃO GERAL", "CLASSIFICACAO_GERAL.pdf")
-            msgs.append(res1[1])
-            dados_cat = self.db.obter_classificacao_por_categoria(filtro_advogado=filtro_padrao)
-            res2 = self.pdf_gen.gerar_pdf_faixa_etaria(dados_cat, "CLASSIFICAÇÃO POR FAIXA ETÁRIA", "CLASSIFICACAO_FAIXA_ETARIA.pdf")
-            msgs.append(res2[1])
-            
-            dados_adv_geral = self.db.obter_classificacao_geral(filtro_advogado='apenas_advogados')
-            if dados_adv_geral:
-                res3 = self.pdf_gen.gerar_pdf_geral(dados_adv_geral, "CLASSIFICAÇÃO GERAL ADVOGADOS/OAB", "CLASSIFICACAO_GERAL_OAB.pdf")
-                msgs.append(res3[1])
-            
-            dados_adv_cat = self.db.obter_classificacao_por_categoria(filtro_advogado='apenas_advogados')
-            if dados_adv_cat:
-                res4 = self.pdf_gen.gerar_pdf_faixa_etaria(dados_adv_cat, "CLASSIFICAÇÃO POR FAIXA ETÁRIA ADVOGADOS/OAB", "CLASSIFICACAO_FAIXA_ETARIA_OAB.pdf")
-                msgs.append(res4[1])
+            # Processa Masculino (M) e Feminino (F)
+            for s_tipo in ['M', 'F']:
+                label_sexo = "MASCULINO" if s_tipo == 'M' else "FEMININO"
+                
+                # 1. GERAL POR SEXO
+                dados_geral = self.db.obter_classificacao_geral(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
+                if dados_geral:
+                    res = self.pdf_gen.gerar_pdf_geral(dados_geral, f"CLASSIFICAÇÃO GERAL - {label_sexo}", f"GERAL_{label_sexo}.pdf")
+                    msgs.append(res[1])
+                
+                # 2. CATEGORIA POR SEXO
+                dados_cat = self.db.obter_classificacao_por_categoria(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
+                if dados_cat:
+                    res = self.pdf_gen.gerar_pdf_faixa_etaria(dados_cat, f"FAIXA ETÁRIA - {label_sexo}", f"CATEGORIA_{label_sexo}.pdf")
+                    msgs.append(res[1])
+                
+                # 3. ADVOGADOS GERAL POR SEXO
+                dados_adv_geral = self.db.obter_classificacao_geral(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
+                if dados_adv_geral:
+                    res = self.pdf_gen.gerar_pdf_geral(dados_adv_geral, f"GERAL OAB - {label_sexo}", f"GERAL_OAB_{label_sexo}.pdf")
+                    msgs.append(res[1])
+                
+                # 4. ADVOGADOS CATEGORIA POR SEXO
+                dados_adv_cat = self.db.obter_classificacao_por_categoria(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
+                if dados_adv_cat:
+                    res = self.pdf_gen.gerar_pdf_faixa_etaria(dados_adv_cat, f"FAIXA ETÁRIA OAB - {label_sexo}", f"CATEGORIA_OAB_{label_sexo}.pdf")
+                    msgs.append(res[1])
 
-            messagebox.showinfo("Relatórios Gerados", "\n".join(msgs))
+            if not msgs:
+                messagebox.showwarning("Aviso", "Nenhum relatório foi gerado. Verifique se há tempos registrados e se a coluna 'SEXO' está correta.")
+            else:
+                messagebox.showinfo("Relatórios Gerados", "\n".join(msgs))
+            
             self.btn_iniciar.config(state="normal")

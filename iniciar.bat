@@ -1,4 +1,4 @@
-@echo off
+::@echo off
 :: Muda para o diretorio do projeto
 cd /d "%~dp0"
 
@@ -16,7 +16,7 @@ if not exist ".venv" (
 call .venv\Scripts\activate
 
 :: Executa o programa principal
-python main.py
+python src\main.py
 
 :: Se o programa fechar com erro, pausa para leitura
 if %errorlevel% neq 0 (
