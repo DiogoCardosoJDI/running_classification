@@ -17,6 +17,77 @@ class BancoDeDados:
     def __init__(self, db_name="prova_data.db"):
         self.conn = sqlite3.connect(db_name)
         self.cursor = self.conn.cursor()
+        
+    def carregar_dados_iniciais(self, caminho_arquivo):
+        try:
+            if caminho_arquivo.endswith('.csv'):
+                df = pd.read_csv(caminho_arquivo)
+            else:
+                df = pd.read_excel(caminho_arquivo)
+
+            df.columns = [c.strip().upper() for c in df.columns]
+
+            # --- NOVA LÓGICA DE IDADE ---
+            if 'NASCIMENTO' in df.columns and 'IDADE' not in df.columns:
+                df['IDADE'] = df['NASCIMENTO'].apply(self.calcular_idade_real)
+            elif 'IDADE' in df.columns:
+                # Garante que a idade seja numérica para os cálculos de faixa etária
+                df['IDADE'] = pd.to_numeric(df['IDADE'], errors='coerce').fillna(0).astype(int)
+            # ----------------------------
+
+            if 'ADVOGADO' in df.columns:
+                df['ADVOGADO'] = df['ADVOGADO'].astype(str).str.strip().str.upper()
+            else:
+                df['ADVOGADO'] = 'NAO'
+
+            df.to_sql('participantes', self.conn, if_exists='replace', index=False)
+            return True, f"Carregados {len(df)} participantes."
+        except Exception as e:
+            return False, str(e)
+        
+    def calcular_idade_real(self, nascimento):
+        """Converte data de nascimento (datetime, string ou int) em idade (anos)."""
+        try:
+            agora = datetime.datetime.now()
+            # Se já for um objeto de data (vindo do Excel/Pandas)
+            if isinstance(nascimento, (datetime.datetime, pd.Timestamp)):
+                dt_nasc = nascimento
+            else:
+                nasc_str = str(nascimento).strip()
+                # Se for data no formato brasileiro
+                if '/' in nasc_str:
+                    dt_nasc = datetime.datetime.strptime(nasc_str, '%d/%m/%Y')
+                else:
+                    # Tenta conversão genérica do Pandas (ISO, etc)
+                    dt_nasc = pd.to_datetime(nasc_str)
+
+            idade = agora.year - dt_nasc.year - ((agora.month, agora.day) < (dt_nasc.month, dt_nasc.day))
+            return int(idade)
+        except:
+            # Se falhar (ex: já é um número de idade), tenta retornar como inteiro
+            try:
+                return int(float(nascimento))
+            except:
+                return 0
+    
+    def calcular_categoria_dinamica(self, idade, inferior, superior, intervalo):
+        """Lógica para converter idade em string de categoria."""
+        try:
+            idade = int(idade)
+            if idade <= inferior:
+                return f"00 A {inferior:02d} ANOS"
+            if idade >= superior:
+                return f"{superior:02d} ANOS OU +"
+
+            # Gera faixas intermediárias
+            for base in range(inferior + 1, superior, intervalo):
+                teto = base + intervalo - 1
+                if teto >= superior: teto = superior - 1
+                if base <= idade <= teto:
+                    return f"{base:02d} A {teto:02d} ANOS"
+            return "CATEGORIA INDEFINIDA"
+        except:
+            return "IDADE INVALIDA"
 
     def carregar_dados_iniciais(self, caminho_arquivo):
         try:
@@ -25,8 +96,16 @@ class BancoDeDados:
             else:
                 df = pd.read_excel(caminho_arquivo)
             
-            # Padronização: Colunas em maiúsculo e sem espaços
+            # Padronização de colunas
             df.columns = [c.strip().upper() for c in df.columns]
+            
+            # --- LÓGICA DE TRATAMENTO DE IDADE ---
+            # Se houver coluna NASCIMENTO mas não IDADE, calcula
+            if 'NASCIMENTO' in df.columns and 'IDADE' not in df.columns:
+                df['IDADE'] = df['NASCIMENTO'].apply(self.calcular_idade_real)
+            # Se houver IDADE, garante que seja numérico (processando datas se necessário)
+            elif 'IDADE' in df.columns:
+                df['IDADE'] = df['IDADE'].apply(self.calcular_idade_real)
             
             # Tratamento da coluna ADVOGADO
             if 'ADVOGADO' in df.columns:
@@ -34,14 +113,10 @@ class BancoDeDados:
             else:
                 df['ADVOGADO'] = 'NAO'
 
+            # Salva no banco
             df.to_sql('participantes', self.conn, if_exists='replace', index=False)
             
-            required_cols = ['NUMERO', 'CATEGORIA']
-            for col in required_cols:
-                if col not in df.columns:
-                    raise ValueError(f"A planilha precisa ter a coluna '{col}'.")
-                
-            return True, f"Carregados {len(df)} participantes."
+            return True, f"Carregados {len(df)} participantes com idades processadas."
         except Exception as e:
             return False, str(e)
 
@@ -121,7 +196,8 @@ class BancoDeDados:
     def obter_classificacao_por_categoria(self, filtro_advogado='todos', sexo_tipo=None):
         try:
             where_clause = self._construir_query_filtro(filtro_advogado, sexo_tipo)
-            query_cat = f"SELECT DISTINCT CATEGORIA FROM participantes {where_clause} ORDER BY CATEGORIA"
+            # Ordenar por categoria para que o dicionário siga uma ordem lógica
+            query_cat = f"SELECT DISTINCT CATEGORIA FROM participantes {where_clause} ORDER BY CATEGORIA ASC"
             self.cursor.execute(query_cat)
             categorias = [row[0] for row in self.cursor.fetchall()]
             
@@ -233,30 +309,36 @@ class GeradorRelatorios:
         elements.append(Paragraph(titulo, styles['Title']))
         elements.append(Spacer(1, 12))
 
+        # O Loop deve percorrer o dicionário e CRIAR uma tabela para CADA categoria
         for categoria, rows in dados_dict.items():
+            if not rows: continue
+            
             elements.append(Paragraph(f"CATEGORIA: {str(categoria).upper()}", styles['Heading2']))
-        
-        # Adicionada a coluna 'GAP'
-        cabecalho = [['POS.', 'NUM', 'NOME', 'EQUIPE', 'ADV', 'TEMPO', 'GAP']]
-        tabela_dados = []
             
-        tempo_lider_cat = rows[0][-1] if rows else None
+            cabecalho = [['POS.', 'NUM', 'NOME', 'EQUIPE', 'ADV', 'TEMPO', 'GAP']]
+            tabela_dados = []
+            
+            tempo_lider_cat = rows[0][-1] # O primeiro da lista é o líder da categoria
 
-        for i, row in enumerate(rows, 1):
-            linha_formatada = self._tratar_linha(row)
-            tempo_atual = linha_formatada[-1]
+            for i, row in enumerate(rows, 1):
+                linha_formatada = self._tratar_linha(row)
+                tempo_atual = linha_formatada[-1]
+                
+                gap = self._calcular_gap(tempo_atual, tempo_lider_cat)
+                tabela_dados.append([str(i)] + linha_formatada + [gap])
             
-            gap = self._calcular_gap(tempo_atual, tempo_lider_cat)
-            tabela_dados.append([str(i)] + linha_formatada + [gap])
-        t = Table(cabecalho + tabela_dados)
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ]))
-        elements.append(t)
-        elements.append(Spacer(1, 12))
+            # Criar a tabela desta categoria específica
+            t = Table(cabecalho + tabela_dados, hAlign='CENTER')
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ]))
+            
+            elements.append(t)
+            elements.append(Spacer(1, 18)) # Espaço entre as tabelas de categorias
             
         try:
             doc.build(elements)
@@ -341,6 +423,25 @@ class CronometroApp:
         frame_carga = ttk.LabelFrame(container_central, text="Configuração", padding=15)
         frame_carga.pack(fill="x", pady=10)
         
+        # Frame horizontal para as configurações dinâmicas
+        frame_faixas = tk.Frame(frame_carga)
+        frame_faixas.pack(fill="x", pady=5)
+
+        ttk.Label(frame_faixas, text="Limite Inferior:").pack(side="left", padx=2)
+        self.ent_inf = ttk.Entry(frame_faixas, width=5)
+        self.ent_inf.insert(0, "20")
+        self.ent_inf.pack(side="left", padx=5)
+
+        ttk.Label(frame_faixas, text="Limite Superior:").pack(side="left", padx=2)
+        self.ent_sup = ttk.Entry(frame_faixas, width=5)
+        self.ent_sup.insert(0, "60")
+        self.ent_sup.pack(side="left", padx=5)
+
+        ttk.Label(frame_faixas, text="Intervalo:").pack(side="left", padx=2)
+        self.ent_int = ttk.Entry(frame_faixas, width=5)
+        self.ent_int.insert(0, "10")
+        self.ent_int.pack(side="left", padx=5)
+        
         self.btn_carregar = ttk.Button(frame_carga, text="CARREGAR DADOS", command=self.carregar_dados)
         self.btn_carregar.pack(pady=5)
 
@@ -356,7 +457,7 @@ class CronometroApp:
         self.btn_iniciar = ttk.Button(frame_prova, text="INICIAR PROVA", command=self.iniciar_prova)
         self.btn_iniciar.pack(pady=5)
         
-        self.lbl_cronometro = ttk.Label(frame_prova, text="00:00:00", font=("Helvetica", 60, "bold"), foreground="darkblue")
+        self.lbl_cronometro = ttk.Label(frame_prova, text="00:00:00", font=("Helvetica", 30, "bold"), foreground="darkblue")
         self.lbl_cronometro.pack(pady=15)
         self.lbl_cronometro.pack_configure(anchor="center")
 
@@ -444,6 +545,21 @@ class CronometroApp:
             self.prova_iniciada = False
             msgs = []
             filtro_padrao = 'todos' if self.var_incluir_advogados_geral.get() else 'excluir_advogados'
+            
+            # Captura os valores dinâmicos
+            inf = int(self.ent_inf.get())
+            sup = int(self.ent_sup.get())
+            intervalo = int(self.ent_int.get())
+
+            # Atualiza as categorias no banco baseado na idade antes de gerar os relatórios
+            # Assumindo que sua planilha tem uma coluna 'IDADE'
+            self.db.cursor.execute("SELECT NUMERO, IDADE FROM participantes")
+            atletas = self.db.cursor.fetchall()
+
+            for num, idade in atletas:
+                nova_cat = self.db.calcular_categoria_dinamica(idade, inf, sup, intervalo)
+                self.db.cursor.execute("UPDATE participantes SET CATEGORIA = ? WHERE NUMERO = ?", (nova_cat, num))
+            self.db.conn.commit()
             
             # Processa Masculino (M) e Feminino (F)
             for s_tipo in ['M', 'F']:
