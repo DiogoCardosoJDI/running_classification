@@ -164,6 +164,23 @@ class GeradorRelatorios:
             
             linha_tratada.append(valor.upper())
         return linha_tratada
+    
+    def _calcular_gap(self, tempo_atual_str, tempo_primeiro_str):
+        """Retorna a diferença entre o tempo atual e o líder."""
+        try:
+            fmt = '%H:%M:%S'
+            t1 = datetime.datetime.strptime(tempo_primeiro_str, fmt)
+            t2 = datetime.datetime.strptime(tempo_atual_str, fmt)
+            diff = t2 - t1
+
+            # Se for o primeiro colocado, o gap é zero
+            if diff.total_seconds() == 0:
+                return "-"
+
+            # Formata o timedelta (HH:MM:SS)
+            return str(diff)
+        except:
+            return ""
 
     def gerar_pdf_geral(self, dados, titulo="CLASSIFICAÇÃO GERAL", nome_arquivo="classificacao_geral.pdf"):
         if not dados:
@@ -176,12 +193,17 @@ class GeradorRelatorios:
         elements.append(Paragraph(titulo, styles['Title']))
         elements.append(Spacer(1, 12))
 
-        cabecalho = [['POS.', 'NUM', 'NOME', 'EQUIPE', 'CATEGORIA', 'ADV', 'TEMPO']]
+        cabecalho = [['POS.', 'NUM', 'NOME', 'EQUIPE', 'CATEGORIA', 'ADV', 'TEMPO', 'GAP']]
         tabela_dados = []
+        
+        tempo_lider = dados[0][-1] if dados else None # O último elemento da tupla é o TEMPO
         
         for i, row in enumerate(dados, 1):
             linha_formatada = self._tratar_linha(row)
-            tabela_dados.append([str(i)] + linha_formatada)
+            tempo_atual = linha_formatada[-1]
+
+            gap = self._calcular_gap(tempo_atual, tempo_lider)
+            tabela_dados.append([str(i)] + linha_formatada + [gap])
         
         t = Table(cabecalho + tabela_dados)
         t.setStyle(TableStyle([
@@ -213,23 +235,28 @@ class GeradorRelatorios:
 
         for categoria, rows in dados_dict.items():
             elements.append(Paragraph(f"CATEGORIA: {str(categoria).upper()}", styles['Heading2']))
+        
+        # Adicionada a coluna 'GAP'
+        cabecalho = [['POS.', 'NUM', 'NOME', 'EQUIPE', 'ADV', 'TEMPO', 'GAP']]
+        tabela_dados = []
             
-            cabecalho = [['POS.', 'NUM', 'NOME', 'EQUIPE', 'ADV', 'TEMPO']]
-            tabela_dados = []
+        tempo_lider_cat = rows[0][-1] if rows else None
+
+        for i, row in enumerate(rows, 1):
+            linha_formatada = self._tratar_linha(row)
+            tempo_atual = linha_formatada[-1]
             
-            for i, row in enumerate(rows, 1):
-                linha_formatada = self._tratar_linha(row)
-                tabela_dados.append([str(i)] + linha_formatada)
-            
-            t = Table(cabecalho + tabela_dados)
-            t.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ]))
-            elements.append(t)
-            elements.append(Spacer(1, 12))
+            gap = self._calcular_gap(tempo_atual, tempo_lider_cat)
+            tabela_dados.append([str(i)] + linha_formatada + [gap])
+        t = Table(cabecalho + tabela_dados)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 12))
             
         try:
             doc.build(elements)
