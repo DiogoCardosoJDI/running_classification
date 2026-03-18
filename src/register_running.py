@@ -359,7 +359,7 @@ class CronometroApp:
 
     def _criar_interface(self):
         style = ttk.Style()
-        style.configure("TButton", font=("Helvetica", 8, "bold"), padding=10, width=30, anchor="center")
+        style.configure("TButton", font=("Helvetica", 8, "bold"), padding=10, width=25, anchor="center")
         style.configure("TLabel", font=("Helvetica", 8))
 
         frame_topo = tk.Frame(self.root)
@@ -373,7 +373,7 @@ class CronometroApp:
             try:
                 from PIL import Image, ImageTk
                 img_raw = Image.open(caminho_logo)
-                altura_fixa = 110 
+                altura_fixa = 80 
                 porcentagem = (altura_fixa / float(img_raw.size[1]))
                 largura_nova = int((float(img_raw.size[0]) * float(porcentagem)))
                 img_redimensionada = img_raw.resize((largura_nova, altura_fixa), Image.Resampling.LANCZOS)
@@ -392,7 +392,7 @@ class CronometroApp:
             lbl_dir = ttk.Label(frame_topo, image=self.logo_img)
             lbl_dir.pack(side="right", padx=(20, 0))
 
-        lbl_titulo = ttk.Label(frame_topo, text=titulo_texto, font=("Helvetica", 20, "bold"), anchor="center")
+        lbl_titulo = ttk.Label(frame_topo, text=titulo_texto, font=("Helvetica", 22, "bold"), anchor="center")
         lbl_titulo.pack(side="left", fill="x", expand=True) 
 
         ttk.Separator(self.root, orient="horizontal").pack(fill="x", padx=10, pady=5)
@@ -430,6 +430,14 @@ class CronometroApp:
                                    variable=self.var_incluir_advogados_geral,
                                    onvalue=True, offvalue=False)
         lbl_flag.pack(pady=5)
+        
+        frame_podio = tk.Frame(frame_carga)
+        frame_podio.pack(fill="x", pady=5)
+        
+        ttk.Label(frame_podio, text="Excluir da Faixa Etária os X primeiros da Geral:").pack(side="left", padx=2)
+        self.ent_excluir_geral = ttk.Entry(frame_podio, width=5)
+        self.ent_excluir_geral.insert(0, "0") # Padrão 0 para não alterar nada se não quiser
+        self.ent_excluir_geral.pack(side="left", padx=5)
 
         frame_prova = ttk.LabelFrame(container_central, text="Controle de Prova", padding=15)
         frame_prova.pack(fill="x", pady=10)
@@ -572,26 +580,51 @@ class CronometroApp:
                 for s_tipo in ['M', 'F']:
                     label_sexo = "MASCULINO" if s_tipo == 'M' else "FEMININO"
                     
-                    # --- GERAL POR SEXO ---
+                    # Captura a quantidade de exclusão definida na interface
+                    try:
+                        num_excluir = int(self.ent_excluir_geral.get())
+                    except:
+                        num_excluir = 0
+
+                    # --- 1. GERAL (PÚBLICO AMPLO) ---
                     dados_geral = self.db.obter_classificacao_geral(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
                     if dados_geral:
                         res = self.pdf_gen.gerar_pdf_geral(dados_geral, f"CLASSIFICAÇÃO GERAL - {label_sexo}", f"GERAL_{label_sexo}.pdf")
                         msgs.append(res[1])
-                    
-                    # --- CATEGORIA POR SEXO ---
-                    dados_cat = self.db.obter_classificacao_por_categoria(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
-                    if dados_cat:
-                        res = self.pdf_gen.gerar_pdf_faixa_etaria(dados_cat, f"FAIXA ETÁRIA - {label_sexo}", f"CATEGORIA_{label_sexo}.pdf")
-                        msgs.append(res[1])
-                    
-                    # --- OAB GERAL E CATEGORIA ---
+                        # Filtra campeões gerais para a Faixa Etária Geral
+                        ids_campeoes_gerais = [row[0] for row in dados_geral[:num_excluir]] if num_excluir > 0 else []
+                        
+                        dados_cat_brutos = self.db.obter_classificacao_por_categoria(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
+                        dados_cat_filtrados = {cat: [a for a in atletas if a[0] not in ids_campeoes_gerais] 
+                                               for cat, atletas in dados_cat_brutos.items()}
+                        
+                        # Remove categorias que ficaram vazias após o filtro
+                        dados_cat_filtrados = {k: v for k, v in dados_cat_filtrados.items() if v}
+                        
+                        if dados_cat_filtrados:
+                            res = self.pdf_gen.gerar_pdf_faixa_etaria(dados_cat_filtrados, f"FAIXA ETÁRIA - {label_sexo}", f"CATEGORIA_{label_sexo}.pdf")
+                            msgs.append(res[1])
+                    # --- 2. APENAS OAB ---
                     dados_adv_geral = self.db.obter_classificacao_geral(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
                     if dados_adv_geral:
                         self.pdf_gen.gerar_pdf_geral(dados_adv_geral, f"GERAL OAB - {label_sexo}", f"GERAL_OAB_{label_sexo}.pdf")
-                    
-                    dados_adv_cat = self.db.obter_classificacao_por_categoria(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
-                    if dados_adv_cat:
-                        self.pdf_gen.gerar_pdf_faixa_etaria(dados_adv_cat, f"FAIXA ETÁRIA OAB - {label_sexo}", f"CATEGORIA_OAB_{label_sexo}.pdf")
+                        
+                        # LÓGICA DE EXCLUSÃO PARA OAB:
+                        # Identifica os advogados que pegaram pódio no GERAL OAB
+                        ids_campeoes_oab = [row[0] for row in dados_adv_geral[:num_excluir]] if num_excluir > 0 else []
+                        
+                        # Busca categorias OAB
+                        dados_adv_cat_brutos = self.db.obter_classificacao_por_categoria(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
+                        
+                        # Filtra campeões OAB da Faixa Etária OAB
+                        dados_adv_cat_filtrados = {cat: [a for a in atletas if a[0] not in ids_campeoes_oab] 
+                                                   for cat, atletas in dados_adv_cat_brutos.items()}
+                        
+                        # Remove categorias OAB vazias
+                        dados_adv_cat_filtrados = {k: v for k, v in dados_adv_cat_filtrados.items() if v}
+
+                        if dados_adv_cat_filtrados:
+                            self.pdf_gen.gerar_pdf_faixa_etaria(dados_adv_cat_filtrados, f"FAIXA ETÁRIA OAB - {label_sexo}", f"CATEGORIA_OAB_{label_sexo}.pdf")
 
                 if not msgs:
                     messagebox.showwarning("Aviso", "Nenhum atleta com tempo registrado até o momento.")
