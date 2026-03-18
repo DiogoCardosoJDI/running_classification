@@ -18,33 +18,6 @@ class BancoDeDados:
         self.conn = sqlite3.connect(db_name)
         self.cursor = self.conn.cursor()
         
-    def carregar_dados_iniciais(self, caminho_arquivo):
-        try:
-            if caminho_arquivo.endswith('.csv'):
-                df = pd.read_csv(caminho_arquivo)
-            else:
-                df = pd.read_excel(caminho_arquivo)
-
-            df.columns = [c.strip().upper() for c in df.columns]
-
-            # --- NOVA LÓGICA DE IDADE ---
-            if 'NASCIMENTO' in df.columns and 'IDADE' not in df.columns:
-                df['IDADE'] = df['NASCIMENTO'].apply(self.calcular_idade_real)
-            elif 'IDADE' in df.columns:
-                # Garante que a idade seja numérica para os cálculos de faixa etária
-                df['IDADE'] = pd.to_numeric(df['IDADE'], errors='coerce').fillna(0).astype(int)
-            # ----------------------------
-
-            if 'ADVOGADO' in df.columns:
-                df['ADVOGADO'] = df['ADVOGADO'].astype(str).str.strip().str.upper()
-            else:
-                df['ADVOGADO'] = 'NAO'
-
-            df.to_sql('participantes', self.conn, if_exists='replace', index=False)
-            return True, f"Carregados {len(df)} participantes."
-        except Exception as e:
-            return False, str(e)
-        
     def calcular_idade_real(self, nascimento):
         """Converte data de nascimento (datetime, string ou int) em idade (anos)."""
         try:
@@ -132,7 +105,14 @@ class BancoDeDados:
         except Exception as e:
             print(f"Erro BD: {e}")
             return False
-
+    def excluir_registro_chegada(self, numero):
+        try:
+            self.cursor.execute("UPDATE participantes SET TEMPO_PROVA = NULL WHERE NUMERO = ?", (numero,))
+            self.conn.commit()
+            return True, f"Registro do número {numero} removido."
+        except Exception as e:
+            return False, str(e)
+        
     def registrar_chegada(self, numero, tempo_decorrido):
         try:
             try:
@@ -379,8 +359,8 @@ class CronometroApp:
 
     def _criar_interface(self):
         style = ttk.Style()
-        style.configure("TButton", font=("Helvetica", 10, "bold"), padding=10, width=40, anchor="center")
-        style.configure("TLabel", font=("Helvetica", 12))
+        style.configure("TButton", font=("Helvetica", 8, "bold"), padding=10, width=30, anchor="center")
+        style.configure("TLabel", font=("Helvetica", 8))
 
         frame_topo = tk.Frame(self.root)
         frame_topo.pack(fill="x", padx=10, pady=(10, 5))
@@ -412,7 +392,7 @@ class CronometroApp:
             lbl_dir = ttk.Label(frame_topo, image=self.logo_img)
             lbl_dir.pack(side="right", padx=(20, 0))
 
-        lbl_titulo = ttk.Label(frame_topo, text=titulo_texto, font=("Helvetica", 24, "bold"), anchor="center")
+        lbl_titulo = ttk.Label(frame_topo, text=titulo_texto, font=("Helvetica", 20, "bold"), anchor="center")
         lbl_titulo.pack(side="left", fill="x", expand=True) 
 
         ttk.Separator(self.root, orient="horizontal").pack(fill="x", padx=10, pady=5)
@@ -457,7 +437,7 @@ class CronometroApp:
         self.btn_iniciar = ttk.Button(frame_prova, text="INICIAR PROVA", command=self.iniciar_prova)
         self.btn_iniciar.pack(pady=5)
         
-        self.lbl_cronometro = ttk.Label(frame_prova, text="00:00:00", font=("Helvetica", 30, "bold"), foreground="darkblue")
+        self.lbl_cronometro = ttk.Label(frame_prova, text="00:00:00", font=("Helvetica", 20, "bold"), foreground="darkblue")
         self.lbl_cronometro.pack(pady=15)
         self.lbl_cronometro.pack_configure(anchor="center")
 
@@ -465,21 +445,47 @@ class CronometroApp:
         frame_chegada.pack(fill="x", pady=10)
         
         ttk.Label(frame_chegada, text="Número do Participante:").pack()
-        self.entry_numero = ttk.Entry(frame_chegada, font=("Helvetica", 20), justify="center", width=12)
+        self.entry_numero = ttk.Entry(frame_chegada, font=("Helvetica", 15), justify="center", width=10)
         self.entry_numero.pack(pady=10)
         self.entry_numero.bind('<Return>', lambda e: self.registrar_chegada())
         
         self.btn_chegada = ttk.Button(frame_chegada, text="REGISTRAR CHEGADA", command=self.registrar_chegada)
         self.btn_chegada.pack(pady=5)
         
-        self.listbox_log = tk.Listbox(frame_chegada, height=6, justify="center", font=("Courier", 12))
+        self.btn_corrigir = ttk.Button(frame_chegada, text="CORRIGIR REGISTRO", 
+                                       command=self.corrigir_chegada)
+        self.btn_corrigir.pack(pady=5)
+        
+        self.listbox_log = tk.Listbox(frame_chegada, height=6, justify="center", font=("Courier", 10))
         self.listbox_log.pack(fill="x", pady=10, padx=20)
 
         frame_fim = ttk.LabelFrame(container_central, text="Encerramento", padding=15)
         frame_fim.pack(fill="x", pady=10, side="bottom")
         
-        self.btn_finalizar = ttk.Button(frame_fim, text="FINALIZAR & GERAR RELATÓRIOS", command=self.finalizar_prova)
+        self.btn_finalizar = ttk.Button(frame_fim, text="GERAR RELATÓRIOS", command=self.finalizar_prova)
         self.btn_finalizar.pack(pady=5)
+    
+    def corrigir_chegada(self):
+        selecao = self.listbox_log.curselection()
+        if not selecao:
+            messagebox.showwarning("Aviso", "Selecione um registro na lista abaixo para excluir.")
+            return
+
+        item = self.listbox_log.get(selecao[0])
+        # Extrai o número do texto "Num XXX - HH:MM:SS"
+        try:
+            numero = int(item.split("Num ")[1].split(" -")[0])
+        except:
+            messagebox.showerror("Erro", "Não foi possível identificar o número para exclusão.")
+            return
+
+        if messagebox.askyesno("Confirmar Exclusão", f"Deseja excluir o tempo do atleta {numero}?\nEle poderá ser registrado novamente."):
+            sucesso, msg = self.db.excluir_registro_chegada(numero)
+            if sucesso:
+                self.listbox_log.delete(selecao[0])
+                messagebox.showinfo("Sucesso", msg)
+            else:
+                messagebox.showerror("Erro", msg)
 
     def carregar_dados(self):
         pasta = "data_charge"
@@ -537,61 +543,62 @@ class CronometroApp:
 
     def finalizar_prova(self):
         if not self.prova_iniciada:
-            messagebox.showwarning("Aviso", "Prova não iniciada.")
+            messagebox.showwarning("Aviso", "A prova não está em andamento.")
             return
             
-        if messagebox.askyesno("Confirmar", "Encerrar e gerar relatórios por SEXO?"):
-            self.atualizando_tempo = False
-            self.prova_iniciada = False
+        # Pergunta apenas para confirmar a geração, sem encerrar o fluxo
+        if messagebox.askyesno("Confirmar", "Gerar relatórios com os dados registrados até agora?\n(O cronômetro continuará rodando)"):
+            # MANTEMOS self.atualizando_tempo = True para não parar o relógio
+            
             msgs = []
             filtro_padrao = 'todos' if self.var_incluir_advogados_geral.get() else 'excluir_advogados'
             
-            # Captura os valores dinâmicos
-            inf = int(self.ent_inf.get())
-            sup = int(self.ent_sup.get())
-            intervalo = int(self.ent_int.get())
+            try:
+                # Captura os valores dinâmicos das faixas etárias
+                inf = int(self.ent_inf.get())
+                sup = int(self.ent_sup.get())
+                intervalo = int(self.ent_int.get())
 
-            # Atualiza as categorias no banco baseado na idade antes de gerar os relatórios
-            # Assumindo que sua planilha tem uma coluna 'IDADE'
-            self.db.cursor.execute("SELECT NUMERO, IDADE FROM participantes")
-            atletas = self.db.cursor.fetchall()
+                # 1. Atualiza as categorias no banco baseado na idade atualizada
+                self.db.cursor.execute("SELECT NUMERO, IDADE FROM participantes")
+                atletas = self.db.cursor.fetchall()
 
-            for num, idade in atletas:
-                nova_cat = self.db.calcular_categoria_dinamica(idade, inf, sup, intervalo)
-                self.db.cursor.execute("UPDATE participantes SET CATEGORIA = ? WHERE NUMERO = ?", (nova_cat, num))
-            self.db.conn.commit()
+                for num, idade in atletas:
+                    nova_cat = self.db.calcular_categoria_dinamica(idade, inf, sup, intervalo)
+                    self.db.cursor.execute("UPDATE participantes SET CATEGORIA = ? WHERE NUMERO = ?", (nova_cat, num))
+                self.db.conn.commit()
+                
+                # 2. Processa Masculino (M) e Feminino (F)
+                for s_tipo in ['M', 'F']:
+                    label_sexo = "MASCULINO" if s_tipo == 'M' else "FEMININO"
+                    
+                    # --- GERAL POR SEXO ---
+                    dados_geral = self.db.obter_classificacao_geral(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
+                    if dados_geral:
+                        res = self.pdf_gen.gerar_pdf_geral(dados_geral, f"CLASSIFICAÇÃO GERAL - {label_sexo}", f"GERAL_{label_sexo}.pdf")
+                        msgs.append(res[1])
+                    
+                    # --- CATEGORIA POR SEXO ---
+                    dados_cat = self.db.obter_classificacao_por_categoria(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
+                    if dados_cat:
+                        res = self.pdf_gen.gerar_pdf_faixa_etaria(dados_cat, f"FAIXA ETÁRIA - {label_sexo}", f"CATEGORIA_{label_sexo}.pdf")
+                        msgs.append(res[1])
+                    
+                    # --- OAB GERAL E CATEGORIA ---
+                    dados_adv_geral = self.db.obter_classificacao_geral(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
+                    if dados_adv_geral:
+                        self.pdf_gen.gerar_pdf_geral(dados_adv_geral, f"GERAL OAB - {label_sexo}", f"GERAL_OAB_{label_sexo}.pdf")
+                    
+                    dados_adv_cat = self.db.obter_classificacao_por_categoria(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
+                    if dados_adv_cat:
+                        self.pdf_gen.gerar_pdf_faixa_etaria(dados_adv_cat, f"FAIXA ETÁRIA OAB - {label_sexo}", f"CATEGORIA_OAB_{label_sexo}.pdf")
+
+                if not msgs:
+                    messagebox.showwarning("Aviso", "Nenhum atleta com tempo registrado até o momento.")
+                else:
+                    messagebox.showinfo("Sucesso", "Relatórios gerados com sucesso!\nVocê pode continuar registrando chegadas.")
             
-            # Processa Masculino (M) e Feminino (F)
-            for s_tipo in ['M', 'F']:
-                label_sexo = "MASCULINO" if s_tipo == 'M' else "FEMININO"
-                
-                # 1. GERAL POR SEXO
-                dados_geral = self.db.obter_classificacao_geral(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
-                if dados_geral:
-                    res = self.pdf_gen.gerar_pdf_geral(dados_geral, f"CLASSIFICAÇÃO GERAL - {label_sexo}", f"GERAL_{label_sexo}.pdf")
-                    msgs.append(res[1])
-                
-                # 2. CATEGORIA POR SEXO
-                dados_cat = self.db.obter_classificacao_por_categoria(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
-                if dados_cat:
-                    res = self.pdf_gen.gerar_pdf_faixa_etaria(dados_cat, f"FAIXA ETÁRIA - {label_sexo}", f"CATEGORIA_{label_sexo}.pdf")
-                    msgs.append(res[1])
-                
-                # 3. ADVOGADOS GERAL POR SEXO
-                dados_adv_geral = self.db.obter_classificacao_geral(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
-                if dados_adv_geral:
-                    res = self.pdf_gen.gerar_pdf_geral(dados_adv_geral, f"GERAL OAB - {label_sexo}", f"GERAL_OAB_{label_sexo}.pdf")
-                    msgs.append(res[1])
-                
-                # 4. ADVOGADOS CATEGORIA POR SEXO
-                dados_adv_cat = self.db.obter_classificacao_por_categoria(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
-                if dados_adv_cat:
-                    res = self.pdf_gen.gerar_pdf_faixa_etaria(dados_adv_cat, f"FAIXA ETÁRIA OAB - {label_sexo}", f"CATEGORIA_OAB_{label_sexo}.pdf")
-                    msgs.append(res[1])
-
-            if not msgs:
-                messagebox.showwarning("Aviso", "Nenhum relatório foi gerado. Verifique se há tempos registrados e se a coluna 'SEXO' está correta.")
-            else:
-                messagebox.showinfo("Relatórios Gerados", "\n".join(msgs))
-            
-            self.btn_iniciar.config(state="normal")
+            except ValueError:
+                messagebox.showerror("Erro", "Verifique se os limites de idade e intervalo são números válidos.")
+            except Exception as e:
+                messagebox.showerror("Erro Crítico", f"Falha ao gerar relatórios: {e}")
