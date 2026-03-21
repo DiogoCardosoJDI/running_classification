@@ -17,6 +17,50 @@ class BancoDeDados:
     def __init__(self, db_name="prova_data.db"):
         self.conn = sqlite3.connect(db_name)
         self.cursor = self.conn.cursor()
+    
+    def trocar_numeros_chegada(self, num1, num2):
+        try:
+            # Busca os tempos atuais de ambos
+            self.cursor.execute("SELECT TEMPO_PROVA FROM participantes WHERE NUMERO = ?", (num1,))
+            t1 = self.cursor.fetchone()
+            self.cursor.execute("SELECT TEMPO_PROVA FROM participantes WHERE NUMERO = ?", (num2,))
+            t2 = self.cursor.fetchone()
+
+            if not t1 or not t2:
+                return False, "Um ou ambos os números não existem no banco."
+
+            # Inverte os tempos no banco
+            self.cursor.execute("UPDATE participantes SET TEMPO_PROVA = ? WHERE NUMERO = ?", (t2[0], num1))
+            self.cursor.execute("UPDATE participantes SET TEMPO_PROVA = ? WHERE NUMERO = ?", (t1[0], num2))
+            
+            self.conn.commit()
+            return True, f"Sucesso! Tempos trocados entre {num1} e {num2}."
+        except Exception as e:
+            return False, str(e)
+        
+    def editar_numero_registro(self, numero_errado, numero_correto):
+        try:
+            # Verifica se o número correto já não tem tempo (para não sobrepor)
+            self.cursor.execute("SELECT TEMPO_PROVA FROM participantes WHERE NUMERO = ?", (numero_correto,))
+            res = self.cursor.fetchone()
+            
+            if not res:
+                return False, f"Número {numero_correto} não encontrado na base de dados."
+            if res[0] is not None:
+                return False, f"O número {numero_correto} já possui um tempo registrado. Use a função 'Trocar' se quiser inverter."
+
+            # Pega o tempo do número errado
+            self.cursor.execute("SELECT TEMPO_PROVA FROM participantes WHERE NUMERO = ?", (numero_errado,))
+            tempo = self.cursor.fetchone()[0]
+
+            # Transfere o tempo para o novo número e limpa o antigo
+            self.cursor.execute("UPDATE participantes SET TEMPO_PROVA = ? WHERE NUMERO = ?", (tempo, numero_correto))
+            self.cursor.execute("UPDATE participantes SET TEMPO_PROVA = NULL WHERE NUMERO = ?", (numero_errado,))
+            
+            self.conn.commit()
+            return True, f"Sucesso! Tempo transferido do {numero_errado} para o {numero_correto}."
+        except Exception as e:
+            return False, str(e)
         
     def calcular_idade_real(self, nascimento):
         """Converte data de nascimento (datetime, string ou int) em idade (anos)."""
@@ -69,27 +113,39 @@ class BancoDeDados:
             else:
                 df = pd.read_excel(caminho_arquivo)
             
-            # Padronização de colunas
             df.columns = [c.strip().upper() for c in df.columns]
             
-            # --- LÓGICA DE TRATAMENTO DE IDADE ---
-            # Se houver coluna NASCIMENTO mas não IDADE, calcula
-            if 'NASCIMENTO' in df.columns and 'IDADE' not in df.columns:
-                df['IDADE'] = df['NASCIMENTO'].apply(self.calcular_idade_real)
-            # Se houver IDADE, garante que seja numérico (processando datas se necessário)
-            elif 'IDADE' in df.columns:
-                df['IDADE'] = df['IDADE'].apply(self.calcular_idade_real)
-            
-            # Tratamento da coluna ADVOGADO
+            # --- VALIDAÇÃO HÍBRIDA: IDADE E NASCIMENTO ---
+            def processar_idade_linha(row):
+                # Tenta primeiro pelo Nascimento se a coluna existir
+                if 'NASCIMENTO' in row and pd.notnull(row['NASCIMENTO']):
+                    return self.calcular_idade_real(row['NASCIMENTO'])
+                # Se não, tenta pela Idade direta
+                if 'IDADE' in row and pd.notnull(row['IDADE']):
+                    try: return int(float(row['IDADE']))
+                    except: return 0
+                return 0
+
+            df['IDADE'] = df.apply(processar_idade_linha, axis=1)
+
+            # Padronização de ADVOGADO e SUBCATEGORIA (Percurso)
             if 'ADVOGADO' in df.columns:
                 df['ADVOGADO'] = df['ADVOGADO'].astype(str).str.strip().str.upper()
+            
+            if 'SUBCATEGORIA' in df.columns:
+                df['SUBCATEGORIA'] = df['SUBCATEGORIA'].astype(str).str.strip().str.upper()
             else:
-                df['ADVOGADO'] = 'NAO'
+                df['SUBCATEGORIA'] = 'GERAL'
 
-            # Salva no banco
             df.to_sql('participantes', self.conn, if_exists='replace', index=False)
             
-            return True, f"Carregados {len(df)} participantes com idades processadas."
+            percursos_unicos = df['SUBCATEGORIA'].unique()
+            percursos_formatados = ", ".join(map(str, percursos_unicos))
+            return True, (
+                                f"Carga realizada com sucesso!\n\n"
+                                f"• Total de Atletas: {len(df)}\n"
+                                f"• Percursos Identificados: {percursos_formatados}"
+                            )
         except Exception as e:
             return False, str(e)
 
@@ -138,29 +194,29 @@ class BancoDeDados:
         except Exception as e:
             return False, str(e)
 
-    def _construir_query_filtro(self, filtro_advogado, sexo_tipo=None):
-        """
-        sexo_tipo: 'M' para masculino, 'F' para feminino
-        """
+    def _construir_query_filtro(self, filtro_advogado, sexo_tipo=None, subcategoria=None):
         base_where = "WHERE TEMPO_PROVA IS NOT NULL"
         
-        # Filtro de Advogado
+        # Novo filtro de percurso (5km, 10km, etc)
+        if subcategoria:
+            base_where += f" AND SUBCATEGORIA = '{subcategoria}'"
+            
         if filtro_advogado == 'apenas_advogados':
             base_where += " AND ADVOGADO = 'SIM'"
         elif filtro_advogado == 'excluir_advogados':
             base_where += " AND ADVOGADO != 'SIM'"
             
-        # Filtro de Sexo com mapeamento flexível
         if sexo_tipo == 'M':
             base_where += " AND LOWER(SEXO) IN ('m', 'masc', 'masculino')"
         elif sexo_tipo == 'F':
             base_where += " AND LOWER(SEXO) IN ('f', 'fem', 'feminino')"
             
         return base_where
-
-    def obter_classificacao_geral(self, filtro_advogado='todos', sexo_tipo=None):
+    
+    def obter_classificacao_geral(self, filtro_advogado='todos', sexo_tipo=None, subcategoria=None):
         try:
-            where_clause = self._construir_query_filtro(filtro_advogado, sexo_tipo)
+            # Passamos a subcategoria para o construtor da query
+            where_clause = self._construir_query_filtro(filtro_advogado, sexo_tipo, subcategoria)
             query = f"""
                 SELECT NUMERO, NOME, EQUIPE, CATEGORIA, ADVOGADO, TEMPO_PROVA 
                 FROM participantes 
@@ -172,11 +228,12 @@ class BancoDeDados:
         except Exception as e:
             print(f"Erro query geral: {e}")
             return []
-        
-    def obter_classificacao_por_categoria(self, filtro_advogado='todos', sexo_tipo=None):
+
+    def obter_classificacao_por_categoria(self, filtro_advogado='todos', sexo_tipo=None, subcategoria=None):
         try:
-            where_clause = self._construir_query_filtro(filtro_advogado, sexo_tipo)
-            # Ordenar por categoria para que o dicionário siga uma ordem lógica
+            where_clause = self._construir_query_filtro(filtro_advogado, sexo_tipo, subcategoria)
+            
+            # Busca as categorias que existem dentro desse percurso/filtro específico
             query_cat = f"SELECT DISTINCT CATEGORIA FROM participantes {where_clause} ORDER BY CATEGORIA ASC"
             self.cursor.execute(query_cat)
             categorias = [row[0] for row in self.cursor.fetchall()]
@@ -356,6 +413,81 @@ class CronometroApp:
         except: pass
 
         self._criar_interface()
+        
+    def abrir_janela_edicao_numero(self):
+        # Tenta pegar o número selecionado no Listbox automaticamente
+        selecao = self.listbox_log.curselection()
+        num_preenchido = ""
+        if selecao:
+            item = self.listbox_log.get(selecao[0])
+            num_preenchido = item.split("Num ")[1].split(" -")[0]
+
+        janela_edicao = tk.Toplevel(self.root)
+        janela_edicao.title("Corrigir Número Digitado")
+        janela_edicao.geometry("300x200")
+        janela_edicao.grab_set()
+
+        ttk.Label(janela_edicao, text="Número Errado (Registrado):").pack(pady=5)
+        ent_errado = ttk.Entry(janela_edicao, justify="center")
+        ent_errado.insert(0, num_preenchido)
+        ent_errado.pack()
+
+        ttk.Label(janela_edicao, text="Número Correto (Atleta na Fita):").pack(pady=5)
+        ent_correto = ttk.Entry(janela_edicao, justify="center")
+        ent_correto.pack()
+        ent_correto.focus()
+
+        def confirmar_edicao():
+            n_err = ent_errado.get()
+            n_corr = ent_correto.get()
+            
+            if n_err.isdigit() and n_corr.isdigit():
+                sucesso, msg = self.db.editar_numero_registro(int(n_err), int(n_corr))
+                if sucesso:
+                    # Atualiza o Listbox visualmente para não confundir o digitador
+                    if selecao:
+                        tempo_str = self.listbox_log.get(selecao[0]).split(" - ")[1]
+                        self.listbox_log.delete(selecao[0])
+                        self.listbox_log.insert(selecao[0], f"Num {n_corr} - {tempo_str}")
+                    
+                    messagebox.showinfo("Sucesso", msg)
+                    janela_edicao.destroy()
+                else:
+                    messagebox.showerror("Erro", msg)
+            else:
+                messagebox.showwarning("Aviso", "Preencha números válidos.")
+
+        ttk.Button(janela_edicao, text="SALVAR ALTERAÇÃO", command=confirmar_edicao).pack(pady=15)
+        
+    def abrir_janela_correcao_inversao(self):
+        # Janela simples de input
+        janela_troca = tk.Toplevel(self.root)
+        janela_troca.title("Corrigir Inversão de Chegada")
+        janela_troca.geometry("300x200")
+        janela_troca.grab_set() # Foca apenas nesta janela
+
+        ttk.Label(janela_troca, text="Número do Atleta A:").pack(pady=5)
+        ent_a = ttk.Entry(janela_troca, justify="center")
+        ent_a.pack()
+
+        ttk.Label(janela_troca, text="Número do Atleta B:").pack(pady=5)
+        ent_b = ttk.Entry(janela_troca, justify="center")
+        ent_b.pack()
+
+        def executar_troca():
+            n1, n2 = ent_a.get(), ent_b.get()
+            if n1.isdigit() and n2.isdigit():
+                sucesso, msg = self.db.trocar_numeros_chegada(int(n1), int(n2))
+                if sucesso:
+                    messagebox.showinfo("Sucesso", msg)
+                    # Opcional: Atualizar o Log visual se necessário
+                    janela_troca.destroy()
+                else:
+                    messagebox.showerror("Erro", msg)
+            else:
+                messagebox.showwarning("Aviso", "Digite números válidos.")
+
+        ttk.Button(janela_troca, text="CONFIRMAR TROCA", command=executar_troca).pack(pady=20)
 
     def _criar_interface(self):
         style = ttk.Style()
@@ -409,7 +541,7 @@ class CronometroApp:
 
         ttk.Label(frame_faixas, text="Limite Inferior:").pack(side="left", padx=2)
         self.ent_inf = ttk.Entry(frame_faixas, width=5)
-        self.ent_inf.insert(0, "20")
+        self.ent_inf.insert(0, "29")
         self.ent_inf.pack(side="left", padx=5)
 
         ttk.Label(frame_faixas, text="Limite Superior:").pack(side="left", padx=2)
@@ -419,7 +551,7 @@ class CronometroApp:
 
         ttk.Label(frame_faixas, text="Intervalo:").pack(side="left", padx=2)
         self.ent_int = ttk.Entry(frame_faixas, width=5)
-        self.ent_int.insert(0, "10")
+        self.ent_int.insert(0, "15")
         self.ent_int.pack(side="left", padx=5)
         
         self.btn_carregar = ttk.Button(frame_carga, text="CARREGAR DADOS", command=self.carregar_dados)
@@ -436,7 +568,7 @@ class CronometroApp:
         
         ttk.Label(frame_podio, text="Excluir da Faixa Etária os X primeiros da Geral:").pack(side="left", padx=2)
         self.ent_excluir_geral = ttk.Entry(frame_podio, width=5)
-        self.ent_excluir_geral.insert(0, "0") # Padrão 0 para não alterar nada se não quiser
+        self.ent_excluir_geral.insert(0, "5") # Padrão 0 para não alterar nada se não quiser
         self.ent_excluir_geral.pack(side="left", padx=5)
 
         frame_prova = ttk.LabelFrame(container_central, text="Controle de Prova", padding=15)
@@ -457,12 +589,24 @@ class CronometroApp:
         self.entry_numero.pack(pady=10)
         self.entry_numero.bind('<Return>', lambda e: self.registrar_chegada())
         
-        self.btn_chegada = ttk.Button(frame_chegada, text="REGISTRAR CHEGADA", command=self.registrar_chegada)
-        self.btn_chegada.pack(pady=5)
+        frame_botoes_acao = tk.Frame(frame_chegada)
+        frame_botoes_acao.pack(pady=5)        
         
-        self.btn_corrigir = ttk.Button(frame_chegada, text="CORRIGIR REGISTRO", 
-                                       command=self.corrigir_chegada)
-        self.btn_corrigir.pack(pady=5)
+        self.btn_chegada = ttk.Button(frame_botoes_acao, text="REGISTRAR CHEGADA", 
+                                       command=self.registrar_chegada)
+        self.btn_chegada.pack(side="left", padx=5)
+
+        self.btn_corrigir = ttk.Button(frame_botoes_acao, text="EXCLUIR REGISTRO", 
+                                        command=self.corrigir_chegada)
+        self.btn_corrigir.pack(side="left", padx=5)
+
+        self.btn_inverter = ttk.Button(frame_botoes_acao, text="TROCAR REGISTRO", 
+                                        command=self.abrir_janela_correcao_inversao)
+        self.btn_inverter.pack(side="left", padx=5)
+        
+        self.btn_editar_num = ttk.Button(frame_botoes_acao, text="EDITAR NÚMERO", 
+                                         command=self.abrir_janela_edicao_numero)
+        self.btn_editar_num.pack(side="left", padx=5)
         
         self.listbox_log = tk.Listbox(frame_chegada, height=6, justify="center", font=("Courier", 10))
         self.listbox_log.pack(fill="x", pady=10, padx=20)
@@ -548,90 +692,89 @@ class CronometroApp:
         else:
             messagebox.showerror("Erro de Registro", msg)
         self.entry_numero.focus()
-
+        
     def finalizar_prova(self):
         if not self.prova_iniciada:
             messagebox.showwarning("Aviso", "A prova não está em andamento.")
             return
             
-        # Pergunta apenas para confirmar a geração, sem encerrar o fluxo
-        if messagebox.askyesno("Confirmar", "Gerar relatórios com os dados registrados até agora?\n(O cronômetro continuará rodando)"):
-            # MANTEMOS self.atualizando_tempo = True para não parar o relógio
-            
-            msgs = []
-            filtro_padrao = 'todos' if self.var_incluir_advogados_geral.get() else 'excluir_advogados'
-            
+        if messagebox.askyesno("Confirmar", "Gerar relatórios com os dados atuais?\n(O cronômetro continuará rodando)"):
             try:
-                # Captura os valores dinâmicos das faixas etárias
+                # 1. Captura configurações de Faixa Etária da Interface
                 inf = int(self.ent_inf.get())
                 sup = int(self.ent_sup.get())
                 intervalo = int(self.ent_int.get())
+                num_excluir = int(self.ent_excluir_geral.get())
+                filtro_padrao = 'todos' if self.var_incluir_advogados_geral.get() else 'excluir_advogados'
 
-                # 1. Atualiza as categorias no banco baseado na idade atualizada
+                # 2. Atualiza CATEGORIAS no banco (Garante que Idade/Nascimento estejam ok)
                 self.db.cursor.execute("SELECT NUMERO, IDADE FROM participantes")
-                atletas = self.db.cursor.fetchall()
-
-                for num, idade in atletas:
+                atletas_bd = self.db.cursor.fetchall()
+                for num, idade in atletas_bd:
                     nova_cat = self.db.calcular_categoria_dinamica(idade, inf, sup, intervalo)
                     self.db.cursor.execute("UPDATE participantes SET CATEGORIA = ? WHERE NUMERO = ?", (nova_cat, num))
                 self.db.conn.commit()
-                
-                # 2. Processa Masculino (M) e Feminino (F)
-                for s_tipo in ['M', 'F']:
-                    label_sexo = "MASCULINO" if s_tipo == 'M' else "FEMININO"
-                    
-                    # Captura a quantidade de exclusão definida na interface
-                    try:
-                        num_excluir = int(self.ent_excluir_geral.get())
-                    except:
-                        num_excluir = 0
 
-                    # --- 1. GERAL (PÚBLICO AMPLO) ---
-                    dados_geral = self.db.obter_classificacao_geral(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
-                    if dados_geral:
-                        res = self.pdf_gen.gerar_pdf_geral(dados_geral, f"CLASSIFICAÇÃO GERAL - {label_sexo}", f"GERAL_{label_sexo}.pdf")
-                        msgs.append(res[1])
-                        # Filtra campeões gerais para a Faixa Etária Geral
-                        ids_campeoes_gerais = [row[0] for row in dados_geral[:num_excluir]] if num_excluir > 0 else []
-                        
-                        dados_cat_brutos = self.db.obter_classificacao_por_categoria(filtro_advogado=filtro_padrao, sexo_tipo=s_tipo)
-                        dados_cat_filtrados = {cat: [a for a in atletas if a[0] not in ids_campeoes_gerais] 
-                                               for cat, atletas in dados_cat_brutos.items()}
-                        
-                        # Remove categorias que ficaram vazias após o filtro
-                        dados_cat_filtrados = {k: v for k, v in dados_cat_filtrados.items() if v}
-                        
-                        if dados_cat_filtrados:
-                            res = self.pdf_gen.gerar_pdf_faixa_etaria(dados_cat_filtrados, f"FAIXA ETÁRIA - {label_sexo}", f"CATEGORIA_{label_sexo}.pdf")
-                            msgs.append(res[1])
-                    # --- 2. APENAS OAB ---
-                    dados_adv_geral = self.db.obter_classificacao_geral(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
-                    if dados_adv_geral:
-                        self.pdf_gen.gerar_pdf_geral(dados_adv_geral, f"GERAL OAB - {label_sexo}", f"GERAL_OAB_{label_sexo}.pdf")
-                        
-                        # LÓGICA DE EXCLUSÃO PARA OAB:
-                        # Identifica os advogados que pegaram pódio no GERAL OAB
-                        ids_campeoes_oab = [row[0] for row in dados_adv_geral[:num_excluir]] if num_excluir > 0 else []
-                        
-                        # Busca categorias OAB
-                        dados_adv_cat_brutos = self.db.obter_classificacao_por_categoria(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo)
-                        
-                        # Filtra campeões OAB da Faixa Etária OAB
-                        dados_adv_cat_filtrados = {cat: [a for a in atletas if a[0] not in ids_campeoes_oab] 
-                                                   for cat, atletas in dados_adv_cat_brutos.items()}
-                        
-                        # Remove categorias OAB vazias
-                        dados_adv_cat_filtrados = {k: v for k, v in dados_adv_cat_filtrados.items() if v}
+                # 3. Busca todas as SUBCATEGORIAS (Percursos: 5km, 10km, etc)
+                self.db.cursor.execute("SELECT DISTINCT SUBCATEGORIA FROM participantes")
+                subcategorias = [r[0] for r in self.db.cursor.fetchall() if r[0]]
 
-                        if dados_adv_cat_filtrados:
-                            self.pdf_gen.gerar_pdf_faixa_etaria(dados_adv_cat_filtrados, f"FAIXA ETÁRIA OAB - {label_sexo}", f"CATEGORIA_OAB_{label_sexo}.pdf")
+                relatorios_gerados = []
 
-                if not msgs:
-                    messagebox.showwarning("Aviso", "Nenhum atleta com tempo registrado até o momento.")
+                # LOOP PRINCIPAL: Para cada Percurso
+                for sub in subcategorias:
+                    # LOOP SECUNDÁRIO: Para cada Sexo
+                    for s_tipo in ['M', 'F']:
+                        label_sexo = "MASCULINO" if s_tipo == 'M' else "FEMININO"
+                        nome_percurso = str(sub).replace(" ", "_").upper()
+                        
+                        # --- A. CLASSIFICAÇÃO GERAL DO PERCURSO ---
+                        # Nota: Você deve atualizar o método obter_classificacao_geral para aceitar o argumento subcategoria
+                        dados_geral = self.db.obter_classificacao_geral(
+                            filtro_advogado=filtro_padrao, 
+                            sexo_tipo=s_tipo,
+                            subcategoria=sub
+                        )
+
+                        if dados_geral:
+                            nome_pdf_geral = f"GERAL_{nome_percurso}_{label_sexo}.pdf"
+                            self.pdf_gen.gerar_pdf_geral(dados_geral, f"GERAL {sub} - {label_sexo}", nome_pdf_geral)
+                            relatorios_gerados.append(nome_pdf_geral)
+
+                            # --- B. CLASSIFICAÇÃO FAIXA ETÁRIA DO PERCURSO ---
+                            # Identifica quem tirou pódio no geral para excluir da faixa etária
+                            ids_podio_geral = [row[0] for row in dados_geral[:num_excluir]] if num_excluir > 0 else []
+
+                            # Busca dados por categoria dentro deste percurso e sexo
+                            dados_cat_brutos = self.db.obter_classificacao_por_categoria(
+                                filtro_advogado=filtro_padrao, 
+                                sexo_tipo=s_tipo,
+                                subcategoria=sub
+                            )
+
+                            # Filtra os atletas que já ganharam no geral
+                            dados_cat_filtrados = {}
+                            for cat, atletas in dados_cat_brutos.items():
+                                lista_limpa = [a for a in atletas if a[0] not in ids_podio_geral]
+                                if lista_limpa:
+                                    dados_cat_filtrados[cat] = lista_limpa
+
+                            if dados_cat_filtrados:
+                                nome_pdf_cat = f"CATEGORIA_{nome_percurso}_{label_sexo}.pdf"
+                                self.pdf_gen.gerar_pdf_faixa_etaria(dados_cat_filtrados, f"FAIXA ETÁRIA {sub} - {label_sexo}", nome_pdf_cat)
+                                relatorios_gerados.append(nome_pdf_cat)
+
+                        # --- C. CLASSIFICAÇÃO APENAS OAB (OPCIONAL/ADICIONAL) ---
+                        dados_oab = self.db.obter_classificacao_geral(filtro_advogado='apenas_advogados', sexo_tipo=s_tipo, subcategoria=sub)
+                        if dados_oab:
+                            nome_pdf_oab = f"OAB_{nome_percurso}_{label_sexo}.pdf"
+                            self.pdf_gen.gerar_pdf_geral(dados_oab, f"GERAL OAB {sub} - {label_sexo}", nome_pdf_oab)
+                            relatorios_gerados.append(nome_pdf_oab)
+
+                if relatorios_gerados:
+                    messagebox.showinfo("Sucesso", f"{len(relatorios_gerados)} Relatórios gerados com sucesso por percurso!")
                 else:
-                    messagebox.showinfo("Sucesso", "Relatórios gerados com sucesso!\nVocê pode continuar registrando chegadas.")
-            
-            except ValueError:
-                messagebox.showerror("Erro", "Verifique se os limites de idade e intervalo são números válidos.")
+                    messagebox.showwarning("Aviso", "Nenhum dado encontrado para gerar relatórios.")
+
             except Exception as e:
-                messagebox.showerror("Erro Crítico", f"Falha ao gerar relatórios: {e}")
+                messagebox.showerror("Erro Crítico", f"Falha ao processar relatórios: {e}")
