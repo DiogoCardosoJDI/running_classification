@@ -700,6 +700,87 @@ class CronometroApp:
             
         if messagebox.askyesno("Confirmar", "Gerar relatórios com os dados atuais?\n(O cronômetro continuará rodando)"):
             try:
+                # 1. Configurações base
+                inf = int(self.ent_inf.get())
+                sup = int(self.ent_sup.get())
+                intervalo = int(self.ent_int.get())
+                num_excluir = int(self.ent_excluir_geral.get())
+                filtro_padrao = 'todos' if self.var_incluir_advogados_geral.get() else 'excluir_advogados'
+
+                # 2. Sincroniza Categorias no BD
+                self.db.cursor.execute("SELECT NUMERO, IDADE FROM participantes")
+                for num, idade in self.db.cursor.fetchall():
+                    nova_cat = self.db.calcular_categoria_dinamica(idade, inf, sup, intervalo)
+                    self.db.cursor.execute("UPDATE participantes SET CATEGORIA = ? WHERE NUMERO = ?", (nova_cat, num))
+                self.db.conn.commit()
+
+                # 3. Busca Subcategorias (Percursos)
+                self.db.cursor.execute("SELECT DISTINCT SUBCATEGORIA FROM participantes")
+                subcategorias = [r[0] for r in self.db.cursor.fetchall() if r[0]]
+
+                relatorios_gerados = []
+
+                for sub in subcategorias:
+                    for s_tipo in ['M', 'F']:
+                        label_sexo = "MASCULINO" if s_tipo == 'M' else "FEMININO"
+                        nome_percurso = str(sub).replace(" ", "_").upper()
+                        
+                        # --- A. GERAL (Público Geral + OAB dependendo do Checkbox) ---
+                        dados_geral = self.db.obter_classificacao_geral(filtro_padrao, s_tipo, sub)
+                        if dados_geral:
+                            fname = f"GERAL_{nome_percurso}_{label_sexo}.pdf"
+                            self.pdf_gen.gerar_pdf_geral(dados_geral, f"GERAL {sub} - {label_sexo}", fname)
+                            relatorios_gerados.append(fname)
+
+                            # --- B. FAIXA ETÁRIA GERAL ---
+                            ids_podio_geral = [row[0] for row in dados_geral[:num_excluir]]
+                            d_cat_brutos = self.db.obter_classificacao_por_categoria(filtro_padrao, s_tipo, sub)
+                            d_cat_limpos = {c: [a for a in ats if a[0] not in ids_podio_geral] 
+                                           for c, ats in d_cat_brutos.items() if ats}
+                            d_cat_limpos = {c: v for c, v in d_cat_limpos.items() if v} # Remove vazios
+
+                            if d_cat_limpos:
+                                fname_cat = f"CATEGORIA_{nome_percurso}_{label_sexo}.pdf"
+                                self.pdf_gen.gerar_pdf_faixa_etaria(d_cat_limpos, f"FAIXA ETÁRIA {sub} - {label_sexo}", fname_cat)
+                                relatorios_gerados.append(fname_cat)
+
+                        # --- C. ESPECÍFICO ADVOGADOS (Geral e Categoria) ---
+                        dados_oab_geral = self.db.obter_classificacao_geral('apenas_advogados', s_tipo, sub)
+                        if dados_oab_geral:
+                            # Geral OAB
+                            fname_oab = f"OAB_GERAL_{nome_percurso}_{label_sexo}.pdf"
+                            self.pdf_gen.gerar_pdf_geral(dados_oab_geral, f"GERAL OAB {sub} - {label_sexo}", fname_oab)
+                            relatorios_gerados.append(fname_oab)
+
+                            # Faixa Etária OAB
+                            # Se quiser excluir o pódio geral da OAB da faixa etária OAB, use a linha abaixo:
+                            ids_podio_oab = [row[0] for row in dados_oab_geral[:num_excluir]]
+                            
+                            d_oab_cat_brutos = self.db.obter_classificacao_por_categoria('apenas_advogados', s_tipo, sub)
+                            d_oab_cat_limpos = {c: [a for a in ats if a[0] not in ids_podio_oab] 
+                                               for c, ats in d_oab_cat_brutos.items() if ats}
+                            d_oab_cat_limpos = {c: v for c, v in d_oab_cat_limpos.items() if v}
+
+                            if d_oab_cat_limpos:
+                                fname_oab_cat = f"OAB_CATEGORIA_{nome_percurso}_{label_sexo}.pdf"
+                                self.pdf_gen.gerar_pdf_faixa_etaria(d_oab_cat_limpos, f"FAIXA ETÁRIA OAB {sub} - {label_sexo}", fname_oab_cat)
+                                relatorios_gerados.append(fname_oab_cat)
+
+                if relatorios_gerados:
+                    messagebox.showinfo("Sucesso", f"{len(relatorios_gerados)} Relatórios gerados!")
+                else:
+                    messagebox.showwarning("Aviso", "Nenhum dado para relatórios.")
+
+            except Exception as e:
+                messagebox.showerror("Erro Crítico", f"Falha ao processar relatórios: {e}")
+        
+    '''def finalizar_prova(self):
+        if not self.prova_iniciada:
+            messagebox.showwarning("Aviso", "A prova não está em andamento.")
+            return
+            
+        if messagebox.askyesno("Confirmar", "Gerar relatórios com os dados atuais?\n(O cronômetro continuará rodando)"):
+            try:
                 # 1. Captura configurações de Faixa Etária da Interface
                 inf = int(self.ent_inf.get())
                 sup = int(self.ent_sup.get())
@@ -777,4 +858,6 @@ class CronometroApp:
                     messagebox.showwarning("Aviso", "Nenhum dado encontrado para gerar relatórios.")
 
             except Exception as e:
-                messagebox.showerror("Erro Crítico", f"Falha ao processar relatórios: {e}")
+                messagebox.showerror("Erro Crítico", f"Falha ao processar relatórios: {e}")'''
+                
+        
